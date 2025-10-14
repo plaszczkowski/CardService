@@ -1,0 +1,23 @@
+services:
+  cardactions-api:
+    build:
+      context: .
+      dockerfile: src/CardActions.Api/Dockerfile
+    ports:
+      - "5000:80"
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: cardactions-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: cardactions
+      RABBITMQ_DEFAULT_PASS: devpassword
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+volumes:
+  rabbitmq-data:

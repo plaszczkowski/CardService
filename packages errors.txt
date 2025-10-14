@@ -1,0 +1,354 @@
+looks like this using CardActions.Domain.Abstractions;
+using CardActions.Domain.Events;
+using CardActions.Infrastructure.Configuration;
+using Microsoft.Extensions.Logging;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
+using System.Text;
+using System.Text.Json;
+
+namespace CardActions.Infrastructure.EventBus;
+
+/// <summary>
+/// Implementation of event bus.
+/// Handles connection management, channel pooling, error recovery, and observability.
+/// Thread-safe implementation with proper resource disposal.
+/// </summary>
+/// <remarks>
+/// Connection Strategy:
+/// - Lazy connection initialization on first publish
+/// - Automatic recovery enabled via RabbitMQ client
+/// - Channel per-publish to avoid threading issues
+/// - SemaphoreSlim guards connection creation
+/// 
+/// Error Handling:
+/// - BrokerUnreachableException → logs + rethrows (infrastructure failure)
+/// - AlreadyClosedException → attempts reconnection
+/// - OperationInterruptedException → transient, retry via Polly
+/// - All exceptions logged with structured context
+/// </remarks>
+public sealed class RabbitMQEventBus : IEventBus, IDisposable
+{
+    private readonly ILogger<RabbitMQEventBus> _logger;
+    private readonly JsonSerializerOptions _serializerOptions;
+    private readonly ConnectionFactory _connectionFactory;
+    private readonly string _exchange;
+    private readonly SemaphoreSlim _connectionLock = new(1, 1);
+
+    private IConnection? _connection;
+    private bool _disposed;
+
+    /// <summary>
+    /// Initializes RabbitMQ event bus with configuration.
+    /// Connection is lazily created on first publish.
+    /// </summary>
+    /// <param name="logger">Structured logger for diagnostics</param>
+    /// <param name="host">RabbitMQ host (e.g., "rabbitmq.production.local")</param>
+    /// <param name="port">RabbitMQ port (default: 5672)</param>
+    /// <param name="username">Authentication username</param>
+    /// <param name="password">Authentication password (should come from secrets)</param>
+    /// <param name="virtualHost">Virtual host (default: "/")</param>
+    /// <param name="exchange">Exchange name for event publishing</param>
+    /// <param name="eventBusOptions">Global event bus configuration</param>
+    /// <exception cref="ArgumentNullException">Thrown if any required parameter is null</exception>
+    public RabbitMQEventBus(
+        ILogger<RabbitMQEventBus> logger,
+        string host,
+        int port,
+        string username,
+        string password,
+        string virtualHost,
+        string exchange,
+        EventBusOptions eventBusOptions)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _exchange = exchange ?? throw new ArgumentNullException(nameof(exchange));
+
+        // Validate configuration
+        if (string.IsNullOrWhiteSpace(host))
+            throw new ArgumentException("RabbitMQ host cannot be empty", nameof(host));
+        if (string.IsNullOrWhiteSpace(username))
+            throw new ArgumentException("RabbitMQ username cannot be empty", nameof(username));
+        if (string.IsNullOrWhiteSpace(password))
+            throw new ArgumentException("RabbitMQ password cannot be empty", nameof(password));
+        if (port <= 0 || port > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port), "Port must be between 1 and 65535");
+
+        _connectionFactory = new ConnectionFactory
+        {
+            HostName = host,
+            Port = port,
+            UserName = username,
+            Password = password,
+            VirtualHost = virtualHost ?? "/",
+
+            // Production settings for reliability
+            AutomaticRecoveryEnabled = true,
+            NetworkRecoveryInterval = TimeSpan.FromSeconds(10),
+            RequestedHeartbeat = TimeSpan.FromSeconds(60),
+            RequestedConnectionTimeout = TimeSpan.FromSeconds(30),
+
+            // Dispatcher settings for async operations
+            DispatchConsumersAsync = true
+        };
+
+        _serializerOptions = eventBusOptions.SerializerOptions ?? new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = false,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };
+
+        _logger.LogInformation(
+            "RabbitMQEventBus initialized - Host: {Host}:{Port}, VHost: {VHost}, Exchange: {Exchange}",
+            host, port, virtualHost, exchange);
+    }
+
+    /// <summary>
+    /// Publishes a domain event to RabbitMQ exchange with automatic routing.
+    /// Uses event type (lowercase) as routing key for topic-based routing.
+    /// </summary>
+    /// <typeparam name="TEvent">Domain event type</typeparam>
+    /// <param name="event">Event instance to publish</param>
+    /// <param name="cancellationToken">Cancellation token for async operation</param>
+    /// <returns>Task representing async operation</returns>
+    /// <exception cref="ArgumentNullException">Thrown if event is null</exception>
+    /// <exception cref="BrokerUnreachableException">Thrown if RabbitMQ is unavailable</exception>
+    /// <exception cref="OperationInterruptedException">Thrown on transient connection issues</exception>
+    /// <remarks>
+    /// Thread-safe: Creates new channel per publish to avoid threading issues.
+    /// Idempotency: Caller should implement retry with idempotent event handling.
+    /// Performance: Channel creation overhead acceptable for event-driven workloads.
+    /// </remarks>
+    public async Task PublishAsync<TEvent>(TEvent @event, CancellationToken cancellationToken = default)
+        where TEvent : DomainEvent
+    {
+        if (@event == null)
+            throw new ArgumentNullException(nameof(@event));
+
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        try
+        {
+            // Ensure connection exists (lazy initialization + recovery)
+            await EnsureConnectionAsync(cancellationToken);
+
+            // Create channel for this publish operation (thread-safe pattern)
+            using var channel = _connection!.CreateModel();
+
+            // Declare exchange (idempotent operation)
+            channel.ExchangeDeclare(
+                exchange: _exchange,
+                type: ExchangeType.Topic,
+                durable: true,
+                autoDelete: false,
+                arguments: null);
+
+            // Serialize event to JSON
+            var message = JsonSerializer.Serialize(@event, _serializerOptions);
+            var body = Encoding.UTF8.GetBytes(message);
+
+            // Routing key: event type in lowercase (e.g., "cardactionsretrievedevent")
+            var routingKey = @event.EventType.ToLowerInvariant();
+
+            // Set message properties for durability and tracing
+            var properties = channel.CreateBasicProperties();
+            properties.Persistent = true; // Survive broker restarts
+            properties.ContentType = "application/json";
+            properties.ContentEncoding = "utf-8";
+            properties.MessageId = @event.EventId.ToString();
+            properties.Timestamp = new AmqpTimestamp(
+                new DateTimeOffset(@event.OccurredAt).ToUnixTimeSeconds());
+            properties.Type = @event.EventType;
+
+            // Add custom headers for observability
+            properties.Headers = new Dictionary<string, object>
+            {
+                { "schema-version", @event.SchemaVersion },
+                { "published-at", DateTime.UtcNow.ToString("O") }
+            };
+
+            // Publish to exchange with routing key
+            channel.BasicPublish(
+                exchange: _exchange,
+                routingKey: routingKey,
+                mandatory: false, // Don't require queue binding
+                basicProperties: properties,
+                body: body);
+
+            // Confirm publication (synchronous call, but ensures delivery)
+            channel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(5));
+
+            _logger.LogInformation(
+                "Event published to RabbitMQ - EventType: {EventType}, EventId: {EventId}, RoutingKey: {RoutingKey}, Size: {Size} bytes",
+                @event.EventType, @event.EventId, routingKey, body.Length);
+        }
+        catch (BrokerUnreachableException ex)
+        {
+            // Infrastructure failure - RabbitMQ not available
+            _logger.LogError(ex,
+                "Failed to publish event {EventType} (EventId: {EventId}) - RabbitMQ broker unreachable",
+                @event.EventType, @event.EventId);
+            throw; // Propagate for retry policy or circuit breaker
+        }
+        catch (AlreadyClosedException ex)
+        {
+            // Connection/channel closed unexpectedly - attempt recovery
+            _logger.LogWarning(ex,
+                "Connection closed while publishing event {EventType} (EventId: {EventId}) - will reconnect on next publish",
+                @event.EventType, @event.EventId);
+
+            // Clear connection to force reconnection
+            await DisconnectAsync();
+            throw; // Propagate for retry policy
+        }
+        catch (OperationInterruptedException ex)
+        {
+            // Transient error (shutdown, flow control, etc.)
+            _logger.LogWarning(ex,
+                "Operation interrupted while publishing event {EventType} (EventId: {EventId}) - Code: {ShutdownCode}",
+                @event.EventType, @event.EventId, ex.ShutdownReason?.ReplyCode);
+            throw; // Propagate for retry policy
+        }
+        catch (Exception ex)
+        {
+            // Unexpected error (serialization, network, etc.)
+            _logger.LogError(ex,
+                "Unexpected error publishing event {EventType} (EventId: {EventId})",
+                @event.EventType, @event.EventId);
+            throw; // Propagate - caller decides retry strategy
+        }
+    }
+
+    /// <summary>
+    /// Publishes multiple events as a batch.
+    /// Each event published individually (no native batch support in AMQP 0-9-1).
+    /// </summary>
+    /// <typeparam name="TEvent">Domain event type</typeparam>
+    /// <param name="events">Collection of events to publish</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Task representing async operation</returns>
+    /// <exception cref="ArgumentNullException">Thrown if events collection is null</exception>
+    /// <remarks>
+    /// Partial failure possible: Some events may publish successfully before exception.
+    /// Caller should implement idempotent event handling and retry logic.
+    /// </remarks>
+    public async Task PublishBatchAsync<TEvent>(IEnumerable<TEvent> events, CancellationToken cancellationToken = default)
+        where TEvent : DomainEvent
+    {
+        if (events == null)
+            throw new ArgumentNullException(nameof(events));
+
+        var eventList = events.ToList();
+
+        _logger.LogInformation(
+            "Publishing batch of {Count} events of type {EventType}",
+            eventList.Count, typeof(TEvent).Name);
+
+        var publishedCount = 0;
+        try
+        {
+            foreach (var @event in eventList)
+            {
+                await PublishAsync(@event, cancellationToken);
+                publishedCount++;
+            }
+
+            _logger.LogInformation(
+                "Batch publish completed - {Count} events published successfully",
+                publishedCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Batch publish failed after {PublishedCount}/{TotalCount} events",
+                publishedCount, eventList.Count);
+            throw; // Caller must handle partial failure
+        }
+    }
+
+    /// <summary>
+    /// Ensures RabbitMQ connection is established.
+    /// Thread-safe lazy initialization with automatic recovery.
+    /// </summary>
+    private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
+    {
+        // Fast path: connection already exists and is open
+        if (_connection?.IsOpen == true)
+            return;
+
+        // Slow path: acquire lock and create connection
+        await _connectionLock.WaitAsync(cancellationToken);
+        try
+        {
+            // Double-check pattern: another thread may have created connection
+            if (_connection?.IsOpen == true)
+                return;
+
+            // Dispose old connection if exists
+            _connection?.Dispose();
+
+            _logger.LogInformation(
+                "Establishing RabbitMQ connection - Host: {Host}:{Port}",
+                _connectionFactory.HostName, _connectionFactory.Port);
+
+            // Create new connection (may throw BrokerUnreachableException)
+            _connection = _connectionFactory.CreateConnection();
+
+            // Enable publisher confirms for reliability
+            using var channel = _connection.CreateModel();
+            channel.ConfirmSelect();
+
+            _logger.LogInformation(
+                "RabbitMQ connection established - ConnectionId: {ConnectionId}",
+                _connection.ClientProvidedName ?? "default");
+        }
+        catch (BrokerUnreachableException ex)
+        {
+            _logger.LogError(ex,
+                "Failed to establish RabbitMQ connection - Host: {Host}:{Port}",
+                _connectionFactory.HostName, _connectionFactory.Port);
+            throw;
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Disconnects from RabbitMQ (for recovery scenarios).
+    /// </summary>
+    private async Task DisconnectAsync()
+    {
+        await _connectionLock.WaitAsync();
+        try
+        {
+            if (_connection != null)
+            {
+                _connection.Dispose();
+                _connection = null;
+                _logger.LogInformation("RabbitMQ connection disposed for recovery");
+            }
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Disposes RabbitMQ connection and resources.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _connection?.Dispose();
+        _connectionLock.Dispose();
+        _disposed = true;
+
+        _logger.LogInformation("RabbitMQEventBus disposed");
+    }
+} but I have error still 'ConnectionFactory' does not contain a definition for 'DispatchConsumersAsync'
