@@ -208,9 +208,21 @@ public sealed class IbmMqEventBus : IEventBus, IDisposable
             if (_queueManager?.IsConnected == true)
                 return;
 
-            // Dispose old connection if exists
-            _queueManager?.Disconnect();
-            _queueManager?.Dispose();
+            // Close old connection if exists (IBM MQ uses Close() not Dispose())
+            if (_queueManager != null)
+            {
+                try
+                {
+                    if (_queueManager.IsConnected)
+                        _queueManager.Disconnect();
+                    _queueManager.Close();
+                }
+                catch (MQException ex)
+                {
+                    _logger.LogWarning(ex, "Error closing previous IBM MQ connection");
+                }
+            }
+            _queueManager = null;
 
             _logger.LogInformation("Establishing IBM MQ connection - QueueManager: {QueueManager}, Host: {Host}:{Port}",
                 _options.QueueManager, _options.Host, _options.Port);
@@ -273,10 +285,19 @@ public sealed class IbmMqEventBus : IEventBus, IDisposable
         {
             if (_queueManager != null)
             {
-                _queueManager.Disconnect();
-                _queueManager.Dispose();
+                try
+                {
+                    if (_queueManager.IsConnected)
+                        _queueManager.Disconnect();
+                    _queueManager.Close();
+                }
+                catch (MQException ex)
+                {
+                    _logger.LogWarning(ex, "Error during IBM MQ disconnection");
+                }
+
                 _queueManager = null;
-                _logger.LogInformation("IBM MQ connection disposed for recovery");
+                _logger.LogInformation("IBM MQ connection closed for recovery");
             }
         }
         finally
@@ -311,12 +332,24 @@ public sealed class IbmMqEventBus : IEventBus, IDisposable
 
         try
         {
-            _queueManager?.Disconnect();
-            _queueManager?.Dispose();
+            if (_queueManager != null)
+            {
+                try
+                {
+                    if (_queueManager.IsConnected)
+                        _queueManager.Disconnect();
+                    _queueManager.Close();
+                }
+                catch (MQException ex)
+                {
+                    _logger.LogWarning(ex, "Error closing IBM MQ connection during disposal");
+                }
+                _queueManager = null;
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during IBM MQ connection disposal");
+            _logger.LogWarning(ex, "Unexpected error during IBM MQ connection disposal");
         }
 
         _connectionLock.Dispose();
