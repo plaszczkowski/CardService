@@ -3,12 +3,11 @@ using CardActions.Domain.Abstractions;
 using CardActions.Infrastructure.Configuration;
 using CardActions.Infrastructure.Data;
 using CardActions.Infrastructure.EventBus;
+using CardActions.Infrastructure.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
-using HealthChecks.RabbitMQ;
-using Polly;
-using Polly.Extensions.Http;
+using RabbitMQ.Client;
 
 namespace CardActions.Infrastructure;
 
@@ -30,12 +29,15 @@ public static class DependencyInjection
         {
             case "inmemory":
                 services.AddSingleton<IEventBus, InMemoryEventBus>();
+                // No health check for in-memory (always healthy)
                 break;
 
             case "rabbitmq":
                 if (eventBusOptions.RabbitMQ == null)
-                    throw new InvalidOperationException("RabbitMQ configuration is required when Provider='RabbitMQ'");
+                    throw new InvalidOperationException(
+                        "RabbitMQ configuration is required when Provider='RabbitMQ'.");
 
+                // Register RabbitMQ Event Bus with Resilient decorator
                 services.AddSingleton<IEventBus>(sp =>
                 {
                     var logger = sp.GetRequiredService<ILogger<RabbitMQEventBus>>();
@@ -53,28 +55,35 @@ public static class DependencyInjection
                     return new ResilientEventBus(rabbitMQEventBus, logger);
                 });
 
-                // Register RabbitMQ health check
+                // Register RabbitMQHealthCheck with explicit factory
+                services.AddSingleton<RabbitMQHealthCheck>(sp =>
+                {
+                    var connectionFactory = new ConnectionFactory
+                    {
+                        HostName = eventBusOptions.RabbitMQ.Host,
+                        Port = eventBusOptions.RabbitMQ.Port,
+                        UserName = eventBusOptions.RabbitMQ.Username,
+                        Password = eventBusOptions.RabbitMQ.Password,
+                        VirtualHost = eventBusOptions.RabbitMQ.VirtualHost,
+                        AutomaticRecoveryEnabled = true
+                    };
+                    return new RabbitMQHealthCheck(connectionFactory, eventBusOptions.RabbitMQ.Exchange);
+                });
+
+                // Register RabbitMQ Health Check
                 services.AddHealthChecks()
-                    .AddCheck(sp => new RabbitMQHealthCheck(
-                        new ConnectionFactory
-                        {
-                            HostName = eventBusOptions.RabbitMQ.Host,
-                            Port = eventBusOptions.RabbitMQ.Port,
-                            UserName = eventBusOptions.RabbitMQ.Username,
-                            Password = eventBusOptions.RabbitMQ.Password,
-                            VirtualHost = eventBusOptions.RabbitMQ.VirtualHost,
-                            AutomaticRecoveryEnabled = true
-                        },
-                        eventBusOptions.RabbitMQ.Exchange),
-                        name: "rabbitmq",
+                    .AddCheck<RabbitMQHealthCheck>(
+                        "rabbitmq",
                         failureStatus: HealthStatus.Degraded,
                         tags: new[] { "event-bus", "infrastructure" });
                 break;
 
             case "ibmmq":
                 if (eventBusOptions.IbmMQ == null)
-                    throw new InvalidOperationException("IBM MQ configuration is required when Provider='IbmMQ'");
+                    throw new InvalidOperationException(
+                        "IBM MQ configuration is required when Provider='IbmMQ'.");
 
+                // Register IBM MQ Event Bus with Resilient decorator
                 services.AddSingleton<IEventBus>(sp =>
                 {
                     var logger = sp.GetRequiredService<ILogger<IbmMqEventBus>>();
@@ -87,10 +96,13 @@ public static class DependencyInjection
                     return new ResilientEventBus(ibmMqEventBus, logger);
                 });
 
-                // Register IBM MQ health check
+                // Register IbmMqHealthCheck dependencies
+                services.AddSingleton(eventBusOptions.IbmMQ);
+
+                // Register IBM MQ Health Check
                 services.AddHealthChecks()
-                    .AddCheck(sp => new IbmMqHealthCheck(eventBusOptions.IbmMQ),
-                        name: "ibmmq",
+                    .AddCheck<IbmMqHealthCheck>(
+                        "ibmmq",
                         failureStatus: HealthStatus.Degraded,
                         tags: new[] { "event-bus", "infrastructure" },
                         timeout: TimeSpan.FromSeconds(5));
