@@ -55,22 +55,19 @@ public static class DependencyInjection
                     return new ResilientEventBus(rabbitMQEventBus, logger);
                 });
 
-                // Register RabbitMQHealthCheck with explicit factory
-                services.AddSingleton<RabbitMQHealthCheck>(sp =>
+                // Register RabbitMQ dependencies for health check (strongly-typed)
+                services.AddSingleton(new RabbitMQExchangeName(eventBusOptions.RabbitMQ.Exchange));
+                services.AddSingleton(sp => new ConnectionFactory
                 {
-                    var connectionFactory = new ConnectionFactory
-                    {
-                        HostName = eventBusOptions.RabbitMQ.Host,
-                        Port = eventBusOptions.RabbitMQ.Port,
-                        UserName = eventBusOptions.RabbitMQ.Username,
-                        Password = eventBusOptions.RabbitMQ.Password,
-                        VirtualHost = eventBusOptions.RabbitMQ.VirtualHost,
-                        AutomaticRecoveryEnabled = true
-                    };
-                    return new RabbitMQHealthCheck(connectionFactory, eventBusOptions.RabbitMQ.Exchange);
+                    HostName = eventBusOptions.RabbitMQ.Host,
+                    Port = eventBusOptions.RabbitMQ.Port,
+                    UserName = eventBusOptions.RabbitMQ.Username,
+                    Password = eventBusOptions.RabbitMQ.Password,
+                    VirtualHost = eventBusOptions.RabbitMQ.VirtualHost,
+                    AutomaticRecoveryEnabled = true
                 });
 
-                // Register RabbitMQ Health Check
+                // Register RabbitMQ Health Check (auto-resolve from DI)
                 services.AddHealthChecks()
                     .AddCheck<RabbitMQHealthCheck>(
                         "rabbitmq",
@@ -96,10 +93,10 @@ public static class DependencyInjection
                     return new ResilientEventBus(ibmMqEventBus, logger);
                 });
 
-                // Register IbmMqHealthCheck dependencies
+                // Register IBM MQ dependencies for health check
                 services.AddSingleton(eventBusOptions.IbmMQ);
 
-                // Register IBM MQ Health Check
+                // Register IBM MQ Health Check (auto-resolve from DI)
                 services.AddHealthChecks()
                     .AddCheck<IbmMqHealthCheck>(
                         "ibmmq",

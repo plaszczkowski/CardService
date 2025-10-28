@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Diagnostics.HealthChecks;
+﻿using CardActions.Infrastructure.Configuration;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using RabbitMQ.Client;
 
 namespace CardActions.Infrastructure.HealthChecks;
@@ -12,10 +13,17 @@ public class RabbitMQHealthCheck : IHealthCheck
     private readonly ConnectionFactory _connectionFactory;
     private readonly string _exchange;
 
-    public RabbitMQHealthCheck(ConnectionFactory connectionFactory, string exchange)
+    /// <summary>
+    /// Initializes RabbitMQ health check with strongly-typed configuration.
+    /// </summary>
+    /// <param name="connectionFactory">RabbitMQ connection factory</param>
+    /// <param name="exchangeName">Strongly-typed exchange name wrapper</param>
+    public RabbitMQHealthCheck(
+        ConnectionFactory connectionFactory,
+        RabbitMQExchangeName exchangeName)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
-        _exchange = exchange ?? throw new ArgumentNullException(nameof(exchange));
+        _exchange = exchangeName?.Value ?? throw new ArgumentNullException(nameof(exchangeName));
     }
 
     public async Task<HealthCheckResult> CheckHealthAsync(
@@ -24,7 +32,7 @@ public class RabbitMQHealthCheck : IHealthCheck
     {
         try
         {
-            // ✅ v7.0.0 API: CreateConnectionAsync
+            // v7.0.0 API: CreateConnectionAsync
             await using var connection = await _connectionFactory.CreateConnectionAsync(cancellationToken);
 
             if (!connection.IsOpen)
@@ -32,7 +40,7 @@ public class RabbitMQHealthCheck : IHealthCheck
                 return HealthCheckResult.Unhealthy("RabbitMQ connection is not open");
             }
 
-            // ✅ v7.0.0 API: CreateChannelAsync
+            // v7.0.0 API: CreateChannelAsync
             await using var channel = await connection.CreateChannelAsync(null, cancellationToken);
 
             if (!channel.IsOpen)
@@ -40,7 +48,7 @@ public class RabbitMQHealthCheck : IHealthCheck
                 return HealthCheckResult.Unhealthy("RabbitMQ channel creation failed");
             }
 
-            // ✅ v7.0.0 API: ExchangeDeclarePassiveAsync
+            // v7.0.0 API: ExchangeDeclarePassiveAsync
             await channel.ExchangeDeclarePassiveAsync(_exchange, cancellationToken);
 
             return HealthCheckResult.Healthy("RabbitMQ connection and exchange verified");
