@@ -5,8 +5,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+	<!-- RABBIT MQ Client -->
     <PackageVersion Include="RabbitMQ.Client" Version="7.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.Rabbitmq" Version="9.0.0" />
+	
+	<!-- IBM MQ Client -->
+    <PackageVersion Include="IBMMQDotnetClient" Version="9.3.5" />
+	
     <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="8.0.11" />
     <PackageVersion Include="Microsoft.Extensions.Http.Polly" Version="8.0.0" />
     <PackageVersion Include="Polly" Version="7.2.4" />
