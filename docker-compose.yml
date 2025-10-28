@@ -2,9 +2,15 @@ services:
   cardactions-api:
     build:
       context: .
-      dockerfile: src/CardActions.Api/Dockerfile
+      dockerfile: src/CardActions.API/Dockerfile
     ports:
       - "5000:80"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - EventBus__Provider=InMemory
+    depends_on:
+      - rabbitmq
+      - ibmmq
 
   rabbitmq:
     image: rabbitmq:3.12-management
@@ -18,6 +24,33 @@ services:
       RABBITMQ_DEFAULT_VHOST: /
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  ibmmq:
+    image: ibmcom/mq:latest
+    container_name: cardactions-ibmmq
+    ports:
+      - "1414:1414"   # MQ Listener port
+      - "9443:9443"   # MQ Console (HTTPS)
+    environment:
+      LICENSE: accept
+      MQ_QMGR_NAME: QM1
+      MQ_APP_PASSWORD: passw0rd
+      MQ_ADMIN_PASSWORD: passw0rd
+      MQ_ENABLE_METRICS: "true"
+    volumes:
+      - ibmmq-data:/mnt/mqm
+    healthcheck:
+      test: ["CMD", "chkmqhealthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
 volumes:
   rabbitmq-data:
+  ibmmq-data:
