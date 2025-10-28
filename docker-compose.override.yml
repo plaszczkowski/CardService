@@ -1,24 +1,26 @@
-version: '3.8'
+# docker-compose.override.yml
+# Local development overrides (not committed to production)
+# Place this file in .gitignore for team-specific customization
 
 services:
   cardactions-api:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - EventBus__Provider=InMemory  # Changed from UseInMemory (deprecated)
+      - EventBus__UseInMemory=true  # Force in-memory for local dev
       - Serilog__MinimumLevel__Default=Debug
     ports:
-      - "49510:80"
+      - "49510:80"  # Match launchSettings.json ports
       - "49511:443"
     volumes:
-      - ./logs:/app/logs
+      - ./logs:/app/logs  # Mount logs for easy access
 
-  # RabbitMQ - starts only with --profile rabbitmq
+  # RabbitMQ service (optional, only if testing RabbitMQ locally)
   rabbitmq:
     image: rabbitmq:3.12-management
     container_name: cardactions-rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5672:5672"    # AMQP port
+      - "15672:15672"  # Management UI
     environment:
       - RABBITMQ_DEFAULT_USER=cardactions
       - RABBITMQ_DEFAULT_PASS=devpassword
@@ -26,28 +28,7 @@ services:
     volumes:
       - rabbitmq-data-dev:/var/lib/rabbitmq
     profiles:
-      - rabbitmq
-
-  # IBM MQ - starts only with --profile ibmmq
-  ibmmq:
-    image: ibmcom/mq:latest
-    container_name: cardactions-ibmmq-dev
-    ports:
-      - "1414:1414"
-      - "9443:9443"
-    environment:
-      LICENSE: accept
-      MQ_QMGR_NAME: QM1
-      MQ_APP_PASSWORD: passw0rd
-      MQ_ADMIN_PASSWORD: passw0rd
-      MQ_ENABLE_METRICS: "true"
-      # Dev-specific: disable authentication for easier testing
-      MQ_DEV: "true"
-    volumes:
-      - ibmmq-data-dev:/mnt/mqm
-    profiles:
-      - ibmmq
+      - rabbitmq  # Only start when explicitly requested
 
 volumes:
   rabbitmq-data-dev:
-  ibmmq-data-dev:
