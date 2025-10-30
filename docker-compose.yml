@@ -8,9 +8,8 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - EventBus__Provider=InMemory
-    depends_on:
-      - rabbitmq
-      - ibmmq
+    # REMOVED: depends_on for rabbitmq and ibmmq
+    # Reason: API should work independently with configured provider
 
   rabbitmq:
     image: rabbitmq:3.12-management
@@ -29,6 +28,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+    profiles:
+      - rabbitmq
 
   ibmmq:
     image: ibmcom/mq:latest
@@ -50,6 +51,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    profiles:
+      - ibmmq
 
 volumes:
   rabbitmq-data:
