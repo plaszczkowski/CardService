@@ -29,18 +29,17 @@ public sealed class IbmMqEventBusTests
     public static object[][] InvalidConfigs =>
         new[]
         {
-            new object[] { null, "1414", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentException) },
-            new object[] { "", "1414", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentException) },
-            new object[] { "   ", "1414", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentException) },
-            new object[] { "Host", "", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentOutOfRangeException) },
-            new object[] { "Host", "0", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentOutOfRangeException) },
-            new object[] { "Host", "70000", "QM1", "CHANNEL", "QUEUE", typeof(ArgumentOutOfRangeException) },
-            new object[] { "Host", "1414", null, "CHANNEL", "QUEUE", typeof(ArgumentException) },
-            new object[] { "Host", "1414", "", "CHANNEL", "QUEUE", typeof(ArgumentException) },
-            new object[] { "Host", "1414", "QM1", null, "QUEUE", typeof(ArgumentException) },
-            new object[] { "Host", "1414", "QM1", "", "QUEUE", typeof(ArgumentException) },
-            new object[] { "Host", "1414", "QM1", "CHANNEL", null, typeof(ArgumentException) },
-            new object[] { "Host", "1414", "QM1", "CHANNEL", "", typeof(ArgumentException) }
+            new object[] { new IbmMqOptions { Host = null!, Port = 1414, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "", Port = 1414, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "   ", Port = 1414, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 0, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentOutOfRangeException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 70000, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentOutOfRangeException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = null!, Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = "", Channel = "CHANNEL", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = "QM1", Channel = null!, QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = "QM1", Channel = "", QueueName = "QUEUE" }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = "QM1", Channel = "CHANNEL", QueueName = null! }, typeof(ArgumentException) },
+            new object[] { new IbmMqOptions { Host = "Host", Port = 1414, QueueManager = "QM1", Channel = "CHANNEL", QueueName = "" }, typeof(ArgumentException) }
         };
 
     [Fact]
@@ -49,11 +48,7 @@ public sealed class IbmMqEventBusTests
         // Arrange & Act
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Assert
@@ -64,24 +59,19 @@ public sealed class IbmMqEventBusTests
     [MemberData(nameof(InvalidConfigs))]
     [Trait("Enhancement", "ConstructorValidation")]
     public void Constructor_WithInvalidConfig_ShouldThrowExpectedException(
-        string? host, string portStr, string? queueManager, string? channel, string? queue, Type expectedException)
+        IbmMqOptions invalidOptions, Type expectedException)
     {
         // Arrange
-        Action act = !int.TryParse(portStr, out var port)
-            ? () => throw new ArgumentOutOfRangeException(nameof(portStr), "Port must be a valid integer.")
-            : () => _ = new IbmMqEventBus(
-                _loggerMock.Object,
-                host!,
-                port,
-                queueManager!,
-                channel!,
-                queue!,
-                _options);
+        var testOptions = new EventBusOptions { Provider = "IbmMQ", IbmMQ = invalidOptions };
 
         // Act
-        var exception = Record.Exception(act);
+        Action act = () => _ = new IbmMqEventBus(
+            _loggerMock.Object,
+            invalidOptions,
+            testOptions);
 
         // Assert
+        var exception = Record.Exception(act);
         exception.Should().NotBeNull();
         exception!.GetType().Should().Be(expectedException);
     }
@@ -89,15 +79,22 @@ public sealed class IbmMqEventBusTests
     [Fact]
     public void Constructor_WithInvalidPort_ShouldThrowArgumentOutOfRangeException()
     {
-        // Arrange & Act
+        // Arrange
+        var invalidOptions = new IbmMqOptions
+        {
+            Host = "localhost",
+            Port = 0,
+            QueueManager = "QM1",
+            Channel = "DEV.APP.SVRCONN",
+            QueueName = "DEV.QUEUE.1"
+        };
+        var testOptions = new EventBusOptions { Provider = "IbmMQ", IbmMQ = invalidOptions };
+
+        // Act
         var act = () => _ = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            0,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
-            _options);
+            invalidOptions,
+            testOptions);
 
         // Assert
         var exception = Record.Exception(act);
@@ -111,11 +108,7 @@ public sealed class IbmMqEventBusTests
         // Arrange & Act & Assert
         Assert.Throws<ArgumentNullException>(() => new IbmMqEventBus(
             null!,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options));
     }
 
@@ -125,11 +118,17 @@ public sealed class IbmMqEventBusTests
         // Arrange & Act & Assert
         Assert.Throws<ArgumentNullException>(() => new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            null!,
+            _options));
+    }
+
+    [Fact]
+    public void Constructor_WithNullEventBusOptions_ShouldThrowArgumentNullException()
+    {
+        // Arrange & Act & Assert
+        Assert.Throws<ArgumentNullException>(() => new IbmMqEventBus(
+            _loggerMock.Object,
+            _options.IbmMQ,
             null!));
     }
 
@@ -139,11 +138,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Act & Assert
@@ -157,11 +152,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Act & Assert
@@ -175,11 +166,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Act & Assert
@@ -194,11 +181,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         eventBus.Dispose();
@@ -224,11 +207,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Act
@@ -252,11 +231,7 @@ public sealed class IbmMqEventBusTests
         // Arrange
         var eventBus = new IbmMqEventBus(
             _loggerMock.Object,
-            "localhost",
-            1414,
-            "QM1",
-            "DEV.APP.SVRCONN",
-            "DEV.QUEUE.1",
+            _options.IbmMQ,
             _options);
 
         // Act & Assert (should not throw)
